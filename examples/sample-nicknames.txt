@@ -1,0 +1,12 @@
+# Who the personal QR names really are. One per line:
+#   name on the statement = what it really is, category
+#
+# Your bank statement shows "Ramesh Kumar" where you mean "the milkman".
+# Nobody else can know that — so you write it here once, and every
+# future report calls it milk, not a mystery payment.
+Ramesh Kumar = Milkman, Groceries
+9876543210@okaxis = Milkman, Groceries
+
+# Your own accounts, so transfers to them are not counted as spending:
+#   own: account number or name = a label
+own: SBI SAVINGS = My SBI savings
