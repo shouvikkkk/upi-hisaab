@@ -52,6 +52,45 @@ class TestStatementFormats(unittest.TestCase):
         self.assertEqual(txns[0].direction, "debit")
         self.assertEqual(txns[1].direction, "credit")
 
+    def test_semicolon_separator(self):
+        csv_text = (
+            "Date;Narration;Debit;Credit\n"
+            "01/11/2026;UPI/412345678901/P2M/test@okaxis/SWIGGY;350;\n"
+            "02/11/2026;NEFT-SALARY ACME;;25000\n"
+        )
+        txns, warnings = read_statement_csv(csv_text)
+        self.assertEqual(len(txns), 2)
+        self.assertEqual(txns[0].payee, "SWIGGY")
+        self.assertEqual(txns[1].direction, "credit")
+
+    def test_tab_separator(self):
+        csv_text = (
+            "Date\tNarration\tDebit\tCredit\n"
+            "01/11/2026\tUPI/412345678901/P2M/test@okaxis/SWIGGY\t350\t\n"
+        )
+        txns, warnings = read_statement_csv(csv_text)
+        self.assertEqual(len(txns), 1)
+        self.assertEqual(txns[0].amount, Decimal("350"))
+
+    def test_pipe_separator(self):
+        csv_text = (
+            "Date|Narration|Debit|Credit\n"
+            "01/11/2026|UPI/412345678901/P2M/test@okaxis/SWIGGY|350|\n"
+        )
+        txns, warnings = read_statement_csv(csv_text)
+        self.assertEqual(len(txns), 1)
+        self.assertEqual(txns[0].payee, "SWIGGY")
+
+    def test_dates_with_time_are_read(self):
+        csv_text = (
+            "Date,Narration,Debit,Credit\n"
+            "01/11/2026 14:32,UPI/412345678901/P2M/test@okaxis/SWIGGY,350,\n"
+            "02-Nov-2026 10:00:00,NEFT-SALARY ACME,,25000\n"
+        )
+        txns, warnings = read_statement_csv(csv_text)
+        self.assertEqual(len(txns), 2)
+        self.assertEqual(warnings, [])
+
 
 class TestStatementWarnings(unittest.TestCase):
     def test_bad_date_row_is_reported_not_dropped_silently(self):
