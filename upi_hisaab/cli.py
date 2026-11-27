@@ -24,15 +24,30 @@ from .statements import StatementError, read_statement_csv
 
 
 def _read_file(path: str) -> str:
+    """Read a text file, tolerating the encodings banks actually export.
+
+    Most exports are UTF-8, but many Indian bank CSVs arrive as
+    Windows-1252 / Latin-1 (a ₹ or é byte breaks a strict UTF-8 read).
+    Try UTF-8 first, then fall back — Latin-1 can decode any byte, so
+    the user gets a report instead of a traceback.
+    """
     try:
-        with open(path, encoding="utf-8-sig") as handle:
-            return handle.read()
+        with open(path, "rb") as handle:
+            raw = handle.read()
     except FileNotFoundError:
         print(f"error: no such file: {path}", file=sys.stderr)
         raise SystemExit(2)
     except OSError as exc:
         print(f"error: could not read {path}: {exc}", file=sys.stderr)
         raise SystemExit(2)
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    # Unreachable (latin-1 never fails), but never show a traceback.
+    print(f"error: could not read {path} as text", file=sys.stderr)
+    raise SystemExit(2)
 
 
 def _month_label(transactions, month_arg: str | None) -> str:
@@ -66,21 +81,53 @@ def cmd_report(args: argparse.Namespace) -> int:
         nicknames, nick_warnings = parse_nicknames(nick_text)
         warnings = warnings + nick_warnings
 
+    # Reconcile and find subscriptions on the WHOLE file first. A refund
+    # often lands in the next month (buy in September, refund in
+    # October) and a subscription is only "monthly" across months —
+    # filtering to one month before matching would lose both, and the
+    # October refund would be counted as new income. --month only
+    # windows what the report shows.
+    transactions = categorise_all(transactions, nicknames)
+    transactions, counts, dropped = reconcile(transactions, nicknames)
+    recurring = find_recurring(transactions)
+
     if args.month:
         parsed = parse_month(args.month)
         if parsed is None:
             print("error: --month must look like 2026-11", file=sys.stderr)
             return 2
         year, month = parsed
-        before = len(transactions)
-        transactions = [t for t in transactions if (t.date.year, t.date.month) == (year, month)]
-        if not transactions:
-            print(f"error: no transactions in {args.month} ({before} in the file)", file=sys.stderr)
+        month_start = date(year, month, 1)
+        month_end = (
+            date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+        )
+        windowed = [
+            t for t in transactions if month_start <= t.date < month_end
+        ]
+        if not windowed:
+            print(
+                f"error: no transactions in {args.month} "
+                f"({len(transactions)} in the file)",
+                file=sys.stderr,
+            )
             return 2
+        transactions = windowed
+        # Counts describe the month shown, not the whole file.
+        counts = {
+            "duplicates_removed": sum(
+                1 for t in dropped if month_start <= t.date < month_end
+            )
+        }
+        for kind in ("self_transfer", "refund", "reversal", "fee", "spending", "income"):
+            counts[kind] = sum(1 for t in transactions if t.kind == kind)
+        # Show subscriptions that were active in this month (their
+        # charge range overlaps it), still judged on full history.
+        recurring = [
+            item
+            for item in recurring
+            if item.first < month_end and item.last >= month_start
+        ]
 
-    transactions = categorise_all(transactions, nicknames)
-    transactions, counts = reconcile(transactions, nicknames)
-    recurring = find_recurring(transactions)
     summary = summarise(transactions)
     label = _month_label(transactions, args.month)
 
