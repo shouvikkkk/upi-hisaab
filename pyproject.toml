@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "upi-hisaab"
-version = "0.1.0"
+version = "0.2.0"
 description = "Turn your bank statement into a plain-language monthly budget — free, offline, no bank login"
 readme = "README.md"
 license = {text = "MIT"}
