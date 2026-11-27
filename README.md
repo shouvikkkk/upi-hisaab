@@ -18,7 +18,7 @@ upi-hisaab does the job from the statement file itself, on your own computer.
 
 ## What it does
 
-1. **Reads your statement** — a CSV export from net banking (SBI, HDFC, ICICI and generic layouts; it works out the columns itself).
+1. **Reads your statement** — a CSV export from net banking (SBI, HDFC, ICICI and generic layouts; it works out the columns itself). Comma, semicolon, tab and pipe separators all work, dates with a time of day (`01/11/2026 14:32`) are fine, and files saved in Windows-1252/Latin-1 encoding are read instead of crashing.
 2. **Decodes every line** — the 12-digit UPI reference, the shop or person, the channel (UPI / IMPS / NEFT / card / ATM).
 3. **Sorts real spending from money that only looks spent:**
    - the same payment listed twice (UPI app + bank statement) is counted **once**,
@@ -66,6 +66,8 @@ python -m upi_hisaab report statement.csv --nicknames nicknames.txt --month 2026
 ```
 
 Add `--format json` for a machine-readable report instead of plain words.
+
+`--month` shows one month, but refunds and subscriptions are still matched across the whole file — buy in September, refund in October, and October's report shows the refund as money back (not as new income), while September's still calls Netflix a monthly subscription.
 
 ## A worked example
 
@@ -136,7 +138,7 @@ Paid to:   SWIGGY
 
 ## Honest limitations
 
-- **PDF statements are not supported.** Export CSV from net banking. (If your bank only gives PDFs, the file will say so instead of failing silently.)
+- **PDF statements are not supported.** Export CSV from net banking. (If your bank only gives PDFs, the file will say so instead of failing silently.) CSV files with semicolon, tab or pipe separators, dates that include a time of day, and Windows-1252/Latin-1 encodings are all read fine.
 - **It knows who you paid, not what you bought.** The 12-digit UPI reference identifies the payment, not the items in the bag. A ₹250 payment to "Some Random Shop" stays uncategorised until you add a nickname for it.
 - **A payment gateway hides the shop.** When the narration says RAZORPAY or BILLDESK, the real shop's name is not in the statement at all — the report says "paid via Razorpay" instead of inventing a merchant.
 - **Recurring detection needs history.** A subscription is only "monthly" after three charges about a month apart. With one charge, a known subscription is flagged as "possible annual — check it", not proven.
@@ -149,7 +151,7 @@ Paid to:   SWIGGY
 python3 -m unittest discover -s tests
 ```
 
-69 tests, covering date/amount formats, narration grammar, all three bank layouts, de-duplication, refunds, reversals, self-transfers, the UPI Lite trap, recurring detection and the full end-to-end report on the sample statement.
+82 tests, covering date/amount formats (including dates with a time of day), narration grammar, all three bank layouts plus semicolon/tab/pipe separators, de-duplication, refunds (including one purchase matching only one refund), reversals, self-transfers, the UPI Lite trap, recurring detection, cross-month refunds and subscriptions in `--month` reports, Latin-1-encoded files, and the full end-to-end report on the sample statement.
 
 ## License
 
