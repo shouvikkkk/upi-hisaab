@@ -74,20 +74,26 @@ class StatementError(Exception):
     """Raised when a file cannot be read as a statement at all."""
 
 
-def read_statement_csv(text: str) -> tuple[list[Transaction], list[str]]:
-    """Parse statement CSV text. Returns (transactions, warnings).
+_DELIMITERS = (",", ";", "\t", "|")
 
-    Warnings name every skipped row (line number + reason) so the user
-    can check nothing real was lost. A file with no recognisable header
-    raises StatementError.
-    """
-    reader = csv.reader(io.StringIO(text))
-    rows = [row for row in reader if any(cell.strip() for cell in row)]
-    if not rows:
-        raise StatementError("The file is empty.")
 
-    header_idx = None
-    columns: dict[str, int] = {}
+def _sniff_delimiter(text: str) -> str | None:
+    """Best-guess delimiter from the first lines, or None."""
+    sample = "\n".join(text.splitlines()[:20])
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters="".join(_DELIMITERS))
+        return dialect.delimiter
+    except csv.Error:
+        return None
+
+
+def _rows_for(text: str, delimiter: str) -> list[list[str]]:
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+    return [row for row in reader if any(cell.strip() for cell in row)]
+
+
+def _find_header(rows: list[list[str]]) -> tuple[int, dict[str, int]] | None:
+    """Locate the header row: a date column plus narration or amount."""
     for i, row in enumerate(rows):
         normed = [_norm(cell) for cell in row]
         columns = {name: idx for idx, name in enumerate(normed) if name}
@@ -95,14 +101,46 @@ def read_statement_csv(text: str) -> tuple[list[Transaction], list[str]]:
             _pick(columns, _NARRATION_ALIASES) is not None
             or _pick(columns, _AMOUNT_ALIASES) is not None
         ):
-            header_idx = i
+            return i, columns
+    return None
+
+
+def read_statement_csv(text: str) -> tuple[list[Transaction], list[str]]:
+    """Parse statement CSV text. Returns (transactions, warnings).
+
+    Warnings name every skipped row (line number + reason) so the user
+    can check nothing real was lost. A file with no recognisable header
+    raises StatementError. The column separator is detected — comma,
+    semicolon, tab and pipe exports all work — by trying each candidate
+    and keeping the first one whose rows contain a recognisable header.
+    """
+    candidates: list[str] = []
+    sniffed = _sniff_delimiter(text)
+    if sniffed is not None:
+        candidates.append(sniffed)
+    for delimiter in _DELIMITERS:
+        if delimiter not in candidates:
+            candidates.append(delimiter)
+
+    rows: list[list[str]] = []
+    header: tuple[int, dict[str, int]] | None = None
+    for delimiter in candidates:
+        trial = _rows_for(text, delimiter)
+        if not trial:
+            continue
+        found = _find_header(trial)
+        if found is not None:
+            rows, header = trial, found
             break
-    if header_idx is None:
+    if header is None:
+        if not _rows_for(text, ","):
+            raise StatementError("The file is empty.")
         raise StatementError(
             "Could not find a header row with a date column and a "
             "narration/amount column. Export the statement as CSV from "
             "your bank's net banking (not a PDF)."
         )
+    header_idx, columns = header
 
     date_col = _pick(columns, _DATE_ALIASES)
     narr_col = _pick(columns, _NARRATION_ALIASES)
