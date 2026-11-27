@@ -32,16 +32,23 @@ def _same_payee(a: str, b: str) -> bool:
     return a == b or a in b or b in a
 
 
-def dedupe(transactions: list[Transaction]) -> tuple[list[Transaction], int]:
-    """Drop exact duplicates (same UTR + amount + date). Returns (kept, dropped)."""
+def dedupe(
+    transactions: list[Transaction],
+) -> tuple[list[Transaction], list[Transaction]]:
+    """Drop exact duplicates (same UTR + amount + direction).
+
+    Returns (kept, dropped) — the dropped lines themselves, so callers
+    can count duplicates inside any window (e.g. one month) instead of
+    only for the whole file.
+    """
     seen: dict[tuple[str, Decimal, str], Transaction] = {}
     kept: list[Transaction] = []
-    dropped = 0
+    dropped: list[Transaction] = []
     for txn in transactions:
         if txn.utr:
             key = (txn.utr, txn.amount, txn.direction)
             if key in seen:
-                dropped += 1
+                dropped.append(txn)
                 seen[key].note(f"same payment also listed as '{txn.narration[:40]}'")
                 continue
             seen[key] = txn
@@ -73,24 +80,45 @@ def mark_refunds_and_reversals(transactions: list[Transaction]) -> None:
     A credit is a refund when it matches an earlier debit on amount and
     (same UTR, or same payee within 30 days). A debit+credit pair with the
     same UTR is a failed payment that was reversed.
+
+    Each debit can be matched at most once: one ₹1,499 purchase cannot
+    refund two separate ₹1,499 credits. Without that rule the second
+    credit — real money in — silently vanishes from income. Credits are
+    matched oldest-first; a same-UTR (reversal) match wins over a payee
+    match, and among payee matches the nearest date wins.
     """
     debits = [t for t in transactions if t.direction == "debit"]
-    for credit in [t for t in transactions if t.direction == "credit"]:
+    consumed: set[int] = set()
+    credits = sorted(
+        (t for t in transactions if t.direction == "credit"),
+        key=lambda t: t.date,
+    )
+    for credit in credits:
         match: Transaction | None = None
-        for debit in debits:
-            if debit.amount != credit.amount:
-                continue
-            if credit.utr and debit.utr and credit.utr == debit.utr:
-                match = debit
-                break
-            if (
-                _same_payee(credit.payee, debit.payee)
+        # Pass 1: same UTR + same amount = failed payment reversed.
+        if credit.utr:
+            for debit in debits:
+                if id(debit) in consumed:
+                    continue
+                if debit.amount == credit.amount and debit.utr == credit.utr:
+                    match = debit
+                    break
+        # Pass 2: same payee + same amount within the refund window,
+        # nearest date first.
+        if match is None:
+            candidates = [
+                debit
+                for debit in debits
+                if id(debit) not in consumed
+                and debit.amount == credit.amount
+                and _same_payee(credit.payee, debit.payee)
                 and 0 <= (credit.date - debit.date).days <= _REFUND_WINDOW_DAYS
-            ):
-                match = debit
-                break
+            ]
+            if candidates:
+                match = min(candidates, key=lambda d: (credit.date - d.date).days)
         if match is None:
             continue
+        consumed.add(id(match))
         if credit.utr and match.utr and credit.utr == match.utr:
             match.kind = "reversal"
             credit.kind = "reversal"
@@ -117,8 +145,13 @@ def mark_fees(transactions: list[Transaction]) -> None:
 
 def reconcile(
     transactions: list[Transaction], nicknames: Nicknames | None = None
-) -> tuple[list[Transaction], dict[str, int]]:
-    """Run every reconciliation step. Returns (transactions, counts)."""
+) -> tuple[list[Transaction], dict[str, int], list[Transaction]]:
+    """Run every reconciliation step.
+
+    Returns (transactions, counts, dropped_duplicates). The dropped
+    lines are returned (not just counted) so a one-month report can
+    count only the duplicates inside that month.
+    """
     kept, dropped = dedupe(transactions)
     mark_self_transfers(kept, nicknames)
     mark_refunds_and_reversals(kept)
@@ -127,7 +160,7 @@ def reconcile(
     for txn in kept:
         if txn.direction == "credit" and txn.kind == "spending":
             txn.kind = "income"
-    counts = {"duplicates_removed": dropped}
+    counts = {"duplicates_removed": len(dropped)}
     for kind in ("self_transfer", "refund", "reversal", "fee", "spending", "income"):
         counts[kind] = sum(1 for t in kept if t.kind == kind)
-    return kept, counts
+    return kept, counts, dropped
