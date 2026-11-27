@@ -23,14 +23,14 @@ class TestDedupe(unittest.TestCase):
     def test_same_utr_twice_is_one_payment(self):
         a = txn(4, 349, "debit", "UPI/412345678901/P2M/9876543210@okhdfcbank/SWIGGY", "SWIGGY", "412345678901")
         b = txn(4, 349, "debit", "UPI/412345678901/P2M/9876543210@okhdfcbank/SWIGGY", "SWIGGY", "412345678901")
-        kept, counts = reconcile([a, b])
+        kept, counts, _ = reconcile([a, b])
         self.assertEqual(counts["duplicates_removed"], 1)
         self.assertEqual(len(kept), 1)
 
     def test_same_amount_different_utr_is_two_payments(self):
         a = txn(4, 640, "debit", "UPI/412345678901/P2M/x/SWIGGY", "SWIGGY", "412345678901")
         b = txn(4, 640, "debit", "UPI/412345678902/P2M/x/SWIGGY", "SWIGGY", "412345678902")
-        kept, counts = reconcile([a, b])
+        kept, counts, _ = reconcile([a, b])
         self.assertEqual(counts["duplicates_removed"], 0)
         self.assertEqual(len(kept), 2)
 
@@ -39,18 +39,18 @@ class TestSelfTransfers(unittest.TestCase):
     def test_lite_topup_is_not_spending(self):
         lite = txn(15, 1000, "debit", "UPI LITE TOPUP")
         lite.kind = "lite_topup"
-        kept, _ = reconcile([lite])
+        kept, _, _ = reconcile([lite])
         self.assertEqual(kept[0].kind, "self_transfer")
 
     def test_own_account_by_nickname(self):
         nicknames, _ = parse_nicknames("own: 50100 23456 789 = My SBI savings\n")
         move = txn(28, 5000, "debit", "IMPS/412345678019/SELF SBI SAVINGS 50100 23456 789", "SELF SBI SAVINGS 50100 23456 789")
-        kept, _ = reconcile([move], nicknames)
+        kept, _, _ = reconcile([move], nicknames)
         self.assertEqual(kept[0].kind, "self_transfer")
 
     def test_self_word_in_narration(self):
         move = txn(28, 5000, "debit", "IMPS/412345678019/SELF TRANSFER", "SELF TRANSFER")
-        kept, _ = reconcile([move])
+        kept, _, _ = reconcile([move])
         self.assertEqual(kept[0].kind, "self_transfer")
 
 
@@ -61,27 +61,57 @@ class TestRefundsAndReversals(unittest.TestCase):
         # Dates are both in November; set the debit 5 days earlier.
         debit.date = date(2026, 10, 20)
         credit.date = date(2026, 10, 25)
-        kept, _ = reconcile([debit, credit])
+        kept, _, _ = reconcile([debit, credit])
         self.assertEqual(kept[0].kind, "refund")
         self.assertEqual(kept[1].kind, "refund")
 
     def test_same_utr_credit_is_a_reversal(self):
         debit = txn(4, 500, "debit", "UPI/412345678901/P2M/x/SWIGGY", "SWIGGY", "412345678901")
         credit = txn(5, 500, "credit", "UPI/412345678901/P2M/x/SWIGGY", "SWIGGY", "412345678901")
-        kept, _ = reconcile([debit, credit])
+        kept, _, _ = reconcile([debit, credit])
         self.assertEqual(kept[0].kind, "reversal")
         self.assertEqual(kept[1].kind, "reversal")
 
     def test_unmatched_credit_is_income(self):
         salary = txn(1, 25000, "credit", "NEFT-SALARY ACME PVT LTD", "SALARY ACME PVT LTD")
-        kept, _ = reconcile([salary])
+        kept, _, _ = reconcile([salary])
         self.assertEqual(kept[0].kind, "income")
+
+    def test_one_purchase_cannot_refund_two_credits(self):
+        # One ₹1,499 purchase, two ₹1,499 credits: only the first credit
+        # is the refund; the second is real money in and must stay income.
+        debit = txn(5, 1499, "debit", "UPI/111111111111/P2M/x/FLIPKART", "FLIPKART", "111111111111")
+        first = txn(2, 1499, "credit", "UPI/222222222222/REFUND/FLIPKART", "FLIPKART", "222222222222")
+        second = txn(3, 1499, "credit", "UPI/333333333333/REFUND/FLIPKART", "FLIPKART", "333333333333")
+        debit.date = date(2026, 9, 5)
+        first.date = date(2026, 10, 2)
+        second.date = date(2026, 10, 3)
+        kept, counts, _ = reconcile([debit, first, second])
+        self.assertEqual(kept[0].kind, "refund")
+        self.assertEqual(kept[1].kind, "refund")
+        self.assertEqual(kept[2].kind, "income")
+        self.assertEqual(counts["refund"], 2)
+        self.assertEqual(counts["income"], 1)
+
+    def test_refund_matches_nearest_debit(self):
+        # Two same-amount purchases, one refund: the nearer purchase is
+        # the refunded one; the older stays ordinary spending.
+        older = txn(1, 500, "debit", "UPI/111111111111/P2M/x/SWIGGY", "SWIGGY", "111111111111")
+        nearer = txn(20, 500, "debit", "UPI/222222222222/P2M/x/SWIGGY", "SWIGGY", "222222222222")
+        credit = txn(25, 500, "credit", "UPI/333333333333/REFUND/SWIGGY", "SWIGGY", "333333333333")
+        older.date = date(2026, 10, 1)
+        nearer.date = date(2026, 10, 20)
+        credit.date = date(2026, 10, 25)
+        kept, _, _ = reconcile([older, nearer, credit])
+        self.assertEqual(kept[0].kind, "spending")
+        self.assertEqual(kept[1].kind, "refund")
+        self.assertEqual(kept[2].kind, "refund")
 
 
 class TestFees(unittest.TestCase):
     def test_sms_charges_are_fees(self):
         charge = txn(22, "17.70", "debit", "SMS CHARGES", "SMS CHARGES")
-        kept, _ = reconcile(categorise_all([charge]))
+        kept, _, _ = reconcile(categorise_all([charge]))
         self.assertEqual(kept[0].kind, "fee")
         self.assertEqual(kept[0].category, "Bank charges")
 
