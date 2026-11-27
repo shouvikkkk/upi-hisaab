@@ -29,6 +29,22 @@ class TestParseDate(unittest.TestCase):
         self.assertIsNone(parse_date(""))
         self.assertIsNone(parse_date("32/13/2026"))
 
+    def test_time_of_day_is_ignored(self):
+        # Real exports carry a time; the report works in whole days.
+        self.assertEqual(parse_date("01/11/2026 14:32"), date(2026, 11, 1))
+        self.assertEqual(parse_date("01-Nov-2026 10:00:00"), date(2026, 11, 1))
+        self.assertEqual(parse_date("2026-11-01T14:32:00"), date(2026, 11, 1))
+        self.assertEqual(parse_date("2026-11-01 09:15"), date(2026, 11, 1))
+        self.assertEqual(parse_date("1 Nov 2026 2:32 PM"), date(2026, 11, 1))
+
+    def test_two_digit_year_with_month_word(self):
+        self.assertEqual(parse_date("01 Nov 26"), date(2026, 11, 1))
+        self.assertEqual(parse_date("01 November 26"), date(2026, 11, 1))
+
+    def test_two_digit_year_numeric(self):
+        self.assertEqual(parse_date("01-11-26"), date(2026, 11, 1))
+        self.assertEqual(parse_date("01.11.26"), date(2026, 11, 1))
+
 
 class TestParseMonth(unittest.TestCase):
     def test_ok(self):
