@@ -1,5 +1,6 @@
 import io
 import json
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -65,6 +66,55 @@ class TestCliEndToEnd(unittest.TestCase):
     def test_empty_month_is_an_error(self):
         code, out = run_cli(["report", STATEMENT, "--month", "2027-01"])
         self.assertEqual(code, 2)
+
+    def test_month_report_keeps_cross_month_refund(self):
+        # The Flipkart purchase is in September, its refund in October.
+        # The October report must show the refund as money back, not as
+        # new income — matching runs on the whole file, --month only
+        # windows the report.
+        code, out = run_cli(
+            ["report", STATEMENT, "--nicknames", NICKNAMES, "--month", "2026-10", "--format", "json"]
+        )
+        self.assertEqual(code, 0)
+        data = json.loads(out)
+        self.assertEqual(data["refunds_total"], "1499.00")
+        self.assertEqual(data["income_total"], "25000.00")
+
+    def test_month_report_keeps_monthly_subscription(self):
+        # Netflix charges Sep/Oct/Nov. The September report must still
+        # call it monthly (₹2,388/year), not "possible annual".
+        code, out = run_cli(
+            ["report", STATEMENT, "--nicknames", NICKNAMES, "--month", "2026-09", "--format", "json"]
+        )
+        self.assertEqual(code, 0)
+        data = json.loads(out)
+        recurring = {r["payee"]: r for r in data["recurring"]}
+        self.assertEqual(recurring["Netflix"]["cadence"], "monthly")
+        self.assertEqual(recurring["Netflix"]["yearly_cost"], "2388.00")
+        # Spotify's single charge is in November — not in September's list.
+        self.assertNotIn("Spotify", recurring)
+
+    def test_latin1_statement_is_read(self):
+        # Bank exports in Windows-1252/Latin-1 (é byte) must not crash.
+        text = "Date,Narration,Debit,Credit\n01/11/2026,Café Payment,500,\n"
+        with tempfile.NamedTemporaryFile("wb", suffix=".csv", delete=False) as handle:
+            handle.write(text.encode("latin-1"))
+            path = handle.name
+        code, out = run_cli(["report", path])
+        self.assertEqual(code, 0)
+        self.assertIn("Money out: ₹500", out)
+
+    def test_semicolon_statement_is_read(self):
+        text = (
+            "Date;Narration;Debit;Credit\n"
+            "01/11/2026;UPI/412345678901/P2M/test@okaxis/SWIGGY;350;\n"
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as handle:
+            handle.write(text)
+            path = handle.name
+        code, out = run_cli(["report", path])
+        self.assertEqual(code, 0)
+        self.assertIn("Money out: ₹350", out)
 
     def test_missing_file_is_an_error(self):
         with self.assertRaises(SystemExit):
